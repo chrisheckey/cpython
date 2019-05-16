@@ -230,9 +230,15 @@ random_seed(RandomObject *self, PyObject *args)
     }
     /* If the arg is an int or long, use its absolute value; else use
      * the absolute value of its hash code.
+     * Calling int.__abs__() or long.__abs__() prevents calling arg.__abs__(),
+     * which might return an invalid value. See issue #31478.
      */
-    if (PyInt_Check(arg) || PyLong_Check(arg))
-        n = PyNumber_Absolute(arg);
+    if (PyInt_Check(arg)) {
+        n = PyInt_Type.tp_as_number->nb_absolute(arg);
+    }
+    else if (PyLong_Check(arg)) {
+        n = PyLong_Type.tp_as_number->nb_absolute(arg);
+    }
     else {
         long hash = PyObject_Hash(arg);
         if (hash == -1)
@@ -409,7 +415,7 @@ random_jumpahead(RandomObject *self, PyObject *n)
     PyObject *remobj;
     unsigned long *mt, tmp, nonzero;
 
-    if (!PyInt_Check(n) && !PyLong_Check(n)) {
+    if (!_PyAnyInt_Check(n)) {
         PyErr_Format(PyExc_TypeError, "jumpahead requires an "
                      "integer, not '%s'",
                      Py_TYPE(n)->tp_name);

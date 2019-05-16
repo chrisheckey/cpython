@@ -547,7 +547,7 @@ static PyObject *
 CDataType_from_address(PyObject *type, PyObject *value)
 {
     void *buf;
-    if (!PyInt_Check(value) && !PyLong_Check(value)) {
+    if (!_PyAnyInt_Check(value)) {
         PyErr_SetString(PyExc_TypeError,
                         "integer expected");
         return NULL;
@@ -691,7 +691,7 @@ CDataType_in_dll(PyObject *type, PyObject *args)
     obj = PyObject_GetAttrString(dll, "_handle");
     if (!obj)
         return NULL;
-    if (!PyInt_Check(obj) && !PyLong_Check(obj)) {
+    if (!_PyAnyInt_Check(obj)) {
         PyErr_SetString(PyExc_TypeError,
                         "the _handle attribute of the second argument must be an integer");
         Py_DECREF(obj);
@@ -1036,6 +1036,7 @@ PyCPointerType_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     if (proto) {
         StgDictObject *itemdict = PyType_stgdict(proto);
         const char *current_format;
+        /* PyCPointerType_SetProto has verified proto has a stgdict. */
         assert(itemdict);
         /* If itemdict->format is NULL, then this is a pointer to an
            incomplete type.  We create a generic format string
@@ -1082,7 +1083,11 @@ PyCPointerType_set_type(PyTypeObject *self, PyObject *type)
     StgDictObject *dict;
 
     dict = PyType_stgdict((PyObject *)self);
-    assert(dict);
+    if (!dict) {
+        PyErr_SetString(PyExc_TypeError,
+                        "abstract class");
+        return NULL;
+    }
 
     if (-1 == PyCPointerType_SetProto(dict, type))
         return NULL;
@@ -1108,7 +1113,11 @@ PyCPointerType_from_param(PyObject *type, PyObject *value)
     }
 
     typedict = PyType_stgdict(type);
-    assert(typedict); /* Cannot be NULL for pointer types */
+    if (!typedict) {
+        PyErr_SetString(PyExc_TypeError,
+                        "abstract class");
+        return NULL;
+    }
 
     /* If we expect POINTER(<type>), but receive a <type> instance, accept
        it by calling byref(<type>).
@@ -1207,6 +1216,10 @@ CharArray_set_raw(CDataObject *self, PyObject *value)
 #if (PY_VERSION_HEX >= 0x02060000)
     Py_buffer view = { 0 };
 #endif
+    if (value == NULL) {
+        PyErr_SetString(PyExc_AttributeError, "cannot delete attribute");
+        return -1;
+    }
     if (PyBuffer_Check(value)) {
         size = Py_TYPE(value)->tp_as_buffer->bf_getreadbuffer(value, 0, (void *)&ptr);
         if (size < 0)
@@ -1451,24 +1464,36 @@ PyCArrayType_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     PyTypeObject *result;
     StgDictObject *stgdict;
     StgDictObject *itemdict;
-    PyObject *proto;
+    PyObject *proto, *length_attr;
     PyObject *typedict;
-    long length;
-
+    Py_ssize_t length;
     Py_ssize_t itemsize, itemalign;
 
     typedict = PyTuple_GetItem(args, 2);
     if (!typedict)
         return NULL;
 
-    proto = PyDict_GetItemString(typedict, "_length_"); /* Borrowed ref */
-    if (!proto || !PyInt_Check(proto)) {
+    length_attr = PyDict_GetItemString(typedict, "_length_"); /* Borrowed ref */
+    if (!length_attr || !_PyAnyInt_Check(length_attr)) {
         PyErr_SetString(PyExc_AttributeError,
                         "class must define a '_length_' attribute, "
                         "which must be a positive integer");
         return NULL;
     }
-    length = PyInt_AS_LONG(proto);
+    if (PyInt_Check(length_attr)) {
+        length = PyInt_AS_LONG(length_attr);
+    }
+    else {
+        assert(PyLong_Check(length_attr));
+        length = PyLong_AsSsize_t(length_attr);
+        if (length == -1 && PyErr_Occurred()) {
+            if (PyErr_ExceptionMatches(PyExc_OverflowError)) {
+                PyErr_SetString(PyExc_OverflowError,
+                                "The '_length_' attribute is too large");
+            }
+            return NULL;
+        }
+    }
 
     proto = PyDict_GetItemString(typedict, "_type_"); /* Borrowed ref */
     if (!proto) {
@@ -1770,7 +1795,7 @@ c_void_p_from_param(PyObject *type, PyObject *value)
     }
     /* Should probably allow buffer interface as well */
 /* int, long */
-    if (PyInt_Check(value) || PyLong_Check(value)) {
+    if (_PyAnyInt_Check(value)) {
         PyCArgObject *parg;
         struct fielddesc *fd = _ctypes_get_fielddesc("P");
 
@@ -2226,7 +2251,11 @@ PyCSimpleType_from_param(PyObject *type, PyObject *value)
     }
 
     dict = PyType_stgdict(type);
-    assert(dict);
+    if (!dict) {
+        PyErr_SetString(PyExc_TypeError,
+                        "abstract class");
+        return NULL;
+    }
 
     /* I think we can rely on this being a one-character string */
     fmt = PyString_AsString(dict->proto);
@@ -2786,6 +2815,16 @@ PyCData_setstate(PyObject *_self, PyObject *args)
         len = self->b_size;
     memmove(self->b_ptr, data, len);
     mydict = PyObject_GetAttrString(_self, "__dict__");
+    if (mydict == NULL) {
+        return NULL;
+    }
+    if (!PyDict_Check(mydict)) {
+        PyErr_Format(PyExc_TypeError,
+                     "%.200s.__dict__ must be a dictionary, not %.200s",
+                     Py_TYPE(_self)->tp_name, Py_TYPE(mydict)->tp_name);
+        Py_DECREF(mydict);
+        return NULL;
+    }
     res = PyDict_Update(mydict, dict);
     Py_DECREF(mydict);
     if (res == -1)
@@ -3337,7 +3376,11 @@ _validate_paramflags(PyTypeObject *type, PyObject *paramflags)
     PyObject *argtypes;
 
     dict = PyType_stgdict((PyObject *)type);
-    assert(dict); /* Cannot be NULL. 'type' is a PyCFuncPtr type. */
+    if (!dict) {
+        PyErr_SetString(PyExc_TypeError,
+                        "abstract class");
+        return 0;
+    }
     argtypes = dict->argtypes;
 
     if (paramflags == NULL || dict->argtypes == NULL)
@@ -3392,7 +3435,7 @@ static int
 _get_name(PyObject *obj, char **pname)
 {
 #ifdef MS_WIN32
-    if (PyInt_Check(obj) || PyLong_Check(obj)) {
+    if (_PyAnyInt_Check(obj)) {
         /* We have to use MAKEINTRESOURCEA for Windows CE.
            Works on Windows as well, of course.
         */
@@ -3442,7 +3485,7 @@ PyCFuncPtr_FromDll(PyTypeObject *type, PyObject *args, PyObject *kwds)
         Py_DECREF(ftuple);
         return NULL;
     }
-    if (!PyInt_Check(obj) && !PyLong_Check(obj)) {
+    if (!_PyAnyInt_Check(obj)) {
         PyErr_SetString(PyExc_TypeError,
                         "the _handle attribute of the second argument must be an integer");
         Py_DECREF(ftuple);
@@ -3487,20 +3530,23 @@ PyCFuncPtr_FromDll(PyTypeObject *type, PyObject *args, PyObject *kwds)
         return NULL;
     }
 #endif
-    Py_INCREF(dll); /* for KeepRef */
-    Py_DECREF(ftuple);
-    if (!_validate_paramflags(type, paramflags))
+    if (!_validate_paramflags(type, paramflags)) {
+        Py_DECREF(ftuple);
         return NULL;
+    }
 
     self = (PyCFuncPtrObject *)GenericPyCData_new(type, args, kwds);
-    if (!self)
+    if (!self) {
+        Py_DECREF(ftuple);
         return NULL;
+    }
 
     Py_XINCREF(paramflags);
     self->paramflags = paramflags;
 
     *(void **)self->b_ptr = address;
-
+    Py_INCREF(dll);
+    Py_DECREF(ftuple);
     if (-1 == KeepRef((CDataObject *)self, 0, dll)) {
         Py_DECREF((PyObject *)self);
         return NULL;
@@ -3573,8 +3619,7 @@ PyCFuncPtr_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 #endif
 
     if (1 == PyTuple_GET_SIZE(args)
-        && (PyInt_Check(PyTuple_GET_ITEM(args, 0))
-        || PyLong_Check(PyTuple_GET_ITEM(args, 0)))) {
+        && _PyAnyInt_Check(PyTuple_GET_ITEM(args, 0))) {
         CDataObject *ob;
         void *ptr = PyLong_AsVoidPtr(PyTuple_GET_ITEM(args, 0));
         if (ptr == NULL && PyErr_Occurred())
@@ -5080,7 +5125,7 @@ Pointer_ass_item(PyObject *_self, Py_ssize_t index, PyObject *value)
     }
 
     stgdict = PyObject_stgdict((PyObject *)self);
-    assert(stgdict); /* Cannot be NULL fr pointer instances */
+    assert(stgdict); /* Cannot be NULL for pointer instances */
 
     proto = stgdict->proto;
     assert(proto);
@@ -5108,7 +5153,7 @@ Pointer_get_contents(CDataObject *self, void *closure)
     }
 
     stgdict = PyObject_stgdict((PyObject *)self);
-    assert(stgdict); /* Cannot be NULL fr pointer instances */
+    assert(stgdict); /* Cannot be NULL for pointer instances */
     return PyCData_FromBaseObj(stgdict->proto,
                              (PyObject *)self, 0,
                              *(void **)self->b_ptr);
@@ -5127,7 +5172,7 @@ Pointer_set_contents(CDataObject *self, PyObject *value, void *closure)
         return -1;
     }
     stgdict = PyObject_stgdict((PyObject *)self);
-    assert(stgdict); /* Cannot be NULL fr pointer instances */
+    assert(stgdict); /* Cannot be NULL for pointer instances */
     assert(stgdict->proto);
     if (!CDataObject_Check(value)) {
         int res = PyObject_IsInstance(value, stgdict->proto);

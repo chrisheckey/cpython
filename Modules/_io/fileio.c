@@ -148,14 +148,16 @@ dircheck(fileio* self, PyObject *nameobj)
 {
 #if defined(HAVE_FSTAT) && defined(S_IFDIR) && defined(EISDIR)
     struct stat buf;
-    int stat_result;
+    int res;
     if (self->fd < 0)
         return 0;
-    _Py_BEGIN_SUPPRESS_IPH
     errno = 0;
-    stat_result = fstat(self->fd, &buf);
+    Py_BEGIN_ALLOW_THREADS
+    _Py_BEGIN_SUPPRESS_IPH
+    res = fstat(self->fd, &buf);
     _Py_END_SUPPRESS_IPH
-    if (stat_result == 0 && S_ISDIR(buf.st_mode)) {
+    Py_END_ALLOW_THREADS
+    if (res == 0 && S_ISDIR(buf.st_mode)) {
         errno = EISDIR;
         PyErr_SetFromErrnoWithFilenameObject(PyExc_IOError, nameobj);
         return -1;
@@ -169,22 +171,37 @@ check_fd(int fd)
 {
 #if defined(HAVE_FSTAT)
     struct stat buf;
-    int is_bad_fd;
+    int res;
+    PyObject *exc;
+    char *msg;
+
+    if (!_PyVerify_fd(fd)) {
+        goto badfd;
+    }
+
+    Py_BEGIN_ALLOW_THREADS
     _Py_BEGIN_SUPPRESS_IPH
     errno = 0;
-    is_bad_fd = (!_PyVerify_fd(fd) || (fstat(fd, &buf) < 0 && errno == EBADF));
+    res = fstat(fd, &buf);
     _Py_END_SUPPRESS_IPH
-    if (is_bad_fd) {
-        PyObject *exc;
-        char *msg = strerror(EBADF);
-        exc = PyObject_CallFunction(PyExc_OSError, "(is)",
-                                    EBADF, msg);
-        PyErr_SetObject(PyExc_OSError, exc);
-        Py_XDECREF(exc);
-        return -1;
+    Py_END_ALLOW_THREADS
+
+    if (res < 0 && errno == EBADF) {
+        goto badfd;
     }
-#endif
+
     return 0;
+
+badfd:
+    msg = strerror(EBADF);
+    exc = PyObject_CallFunction(PyExc_OSError, "(is)",
+                                EBADF, msg);
+    PyErr_SetObject(PyExc_OSError, exc);
+    Py_XDECREF(exc);
+    return -1;
+#else
+    return 0;
+#endif
 }
 
 
@@ -535,18 +552,25 @@ new_buffersize(fileio *self, size_t currentsize)
 #ifdef HAVE_FSTAT
     off_t pos, end;
     struct stat st;
-    int stat_result;
+    int res;
 
+    Py_BEGIN_ALLOW_THREADS
     _Py_BEGIN_SUPPRESS_IPH
     errno = 0;
-    stat_result = fstat(self->fd, &st);
+    res = fstat(self->fd, &st);
     _Py_END_SUPPRESS_IPH
-    if (stat_result == 0) {
+    Py_END_ALLOW_THREADS
+
+    if (res == 0) {
         end = st.st_size;
+
+        Py_BEGIN_ALLOW_THREADS
         _Py_BEGIN_SUPPRESS_IPH
         errno = 0;
         pos = lseek(self->fd, 0L, SEEK_CUR);
         _Py_END_SUPPRESS_IPH
+        Py_END_ALLOW_THREADS
+
         /* Files claiming a size smaller than SMALLCHUNK may
            actually be streaming pseudo-files. In this case, we
            apply the more aggressive algorithm below.
@@ -712,8 +736,16 @@ fileio_write(fileio *self, PyObject *args)
     if (!self->writable)
         return err_mode("writing");
 
-    if (!PyArg_ParseTuple(args, "s*", &pbuf))
+    if (!PyArg_ParseTuple(args, "s*:write", &pbuf)) {
         return NULL;
+    }
+    if (PyUnicode_Check(PyTuple_GET_ITEM(args, 0)) &&
+        PyErr_WarnPy3k("write() argument must be string or buffer, "
+                       "not 'unicode'", 1) < 0)
+    {
+        PyBuffer_Release(&pbuf);
+        return NULL;
+    }
 
     if (_PyVerify_fd(self->fd)) {
         Py_BEGIN_ALLOW_THREADS
