@@ -2440,6 +2440,9 @@ fi
 AC_CHECK_LIB(intl, textdomain,
 	AC_DEFINE(WITH_LIBINTL, 1,
 	[Define to 1 if libintl is needed for locale functions.]))
+AC_SEARCH_LIBS(bind_textdomain_codeset, intl,
+	AC_DEFINE(HAVE_BIND_TEXTDOMAIN_CODESET, 1,
+	[Define to 1 if bind_textdomain_codeset is available.]))
 
 # checks for system dependent C++ extensions support
 case "$ac_sys_system" in
@@ -3117,7 +3120,7 @@ fi
 AC_MSG_RESULT(MACHDEP_OBJS)
 
 # checks for library functions
-AC_CHECK_FUNCS(alarm setitimer getitimer bind_textdomain_codeset chown \
+AC_CHECK_FUNCS(alarm setitimer getitimer chown \
  clock confstr ctermid execv fchmod fchown fork fpathconf ftime ftruncate \
  gai_strerror getgroups getlogin getloadavg getpeername getpgid getpid \
  getentropy \
@@ -3138,7 +3141,7 @@ AC_CHECK_FUNCS(alarm setitimer getitimer bind_textdomain_codeset chown \
 # links. Some libc implementations have a stub lchmod implementation that always
 # returns an error.
 if test "$MACHDEP" != linux; then
-  AC_CHECK_FUNC(lchmod)
+  AC_CHECK_FUNCS(lchmod)
 fi
 
 # For some functions, having a definition is not sufficient, since
@@ -4364,6 +4367,8 @@ LIBS=$LIBS_no_readline
 AC_MSG_CHECKING(for broken nice())
 AC_CACHE_VAL(ac_cv_broken_nice, [
 AC_RUN_IFELSE([AC_LANG_SOURCE([[
+#include <stdlib.h>
+#include <unistd.h>
 int main()
 {
 	int val1 = nice(1);
@@ -4855,7 +4860,7 @@ do
 done
 
 AC_SUBST(SRCDIRS)
-SRCDIRS="Parser Objects Python Modules"
+SRCDIRS="Parser Objects Python Modules Modules/_io"
 AC_MSG_CHECKING(for build directories)
 for dir in $SRCDIRS; do
     if test ! -d $dir; then
